@@ -36,33 +36,44 @@ def init_db():
 
 init_db()
 
-# 3. Główna Logika Hiper-Agenta z zabezpieczeniami i ponawianiem (Retry)
+# 3. Główna Logika Hiper-Agenta z maksymalną bazą modeli Gemini i fallbackiem
 def run_hyper_agent(query: str):
     search_data = ""
     audit_data = ""
     final_report = ""
 
-    # --- ETAP 1: Gemini (Wyszukiwanie z obsługą limitów) ---
-    max_retries = 3
-    for attempt in range(max_retries):
+    # --- ETAP 1: Gemini (Maksymalna baza modeli z automatycznym przełączaniem) ---
+    gemini_models = [
+        'gemini-2.0-flash', 
+        'gemini-1.5-pro', 
+        'gemini-1.5-flash',
+        'gemini-3.1',
+        'gemini-3.5',
+        'gemini-3.6'
+    ]
+    
+    for model_name in gemini_models:
         try:
             gemini_response = gemini_client.models.generate_content(
-                model='gemini-2.5-flash',
+                model=model_name,
                 contents=query,
                 config={'tools': [{'google_search': {}}]}
             )
             search_data = gemini_response.text
-            break
+            if search_data:
+                break  # Sukces - uzyskano dane z aktywnego modelu
         except Exception as e:
-            if attempt == max_retries - 1:
-                search_data = f"[BŁĄD GEMINI - Przekroczone limity API lub brak odpowiedzi: {str(e)}]"
-            else:
-                time.sleep(3) # Odczekaj 3 sekundy przed ponowną próbą
+            # Automatyczne przejście do kolejnego modelu w bazie przy napotkaniu limitu/błędu
+            continue
 
-    # Krótka pauza między modelami, żeby nie uderzyć w limity jednocześnie
+    if not search_data:
+        search_data = "[BŁĄD GEMINI - Wszystkie modele z maksymalnej bazy osiągnęły limity API]"
+
+    # Krótka pauza między etapami
     time.sleep(1)
 
-    # --- ETAP 2: DeepSeek (Audyt techniczny z obsługą limitów) ---
+    # --- ETAP 2: DeepSeek (Audyt techniczny z obsługą ponawiania) ---
+    max_retries = 3
     for attempt in range(max_retries):
         try:
             deepseek_response = deepseek_client.chat.completions.create(
@@ -92,7 +103,7 @@ def run_hyper_agent(query: str):
 
     time.sleep(1)
 
-    # --- ETAP 3: OpenAI GPT-4o (Raport końcowy) ---
+    # --- ETAP 3: OpenAI GPT-4o (Raport końcowy z obsługą ponawiania) ---
     for attempt in range(max_retries):
         try:
             openai_response = openai_client.chat.completions.create(
