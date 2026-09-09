@@ -2,11 +2,11 @@ name: Universal AI Agent
 
 on:
   schedule:
-    - cron: '0 8 * * *'
-  workflow_dispatch:
+    - cron: '0 8 * * *'  # Automatyczne uruchamianie codziennie o 8:00 UTC
+  workflow_dispatch:      # Umożliwia ręczne uruchomienie przyciskiem "Run workflow"
 
 permissions:
-  contents: write
+  contents: write         # Wymagane uprawnienie do automatycznego wykonywania git commit/push
 
 jobs:
   run-agent:
