@@ -38,7 +38,7 @@ def query_local_database(sql_query: str) -> str:
         conn.close()
 
 def search_web(query: str) -> str:
-    """Przeszukuje internet w czasie rzeczywistym pod kątem aktualnych cen, ofert, specyfikacji i artykułów."""
+    """Przeszukuje internet w czasie rzeczywistym pod kątem aktualnych cen, ofert i specyfikacji."""
     try:
         results = DDGS().text(query, max_results=5)
         if not results:
@@ -51,6 +51,22 @@ def search_web(query: str) -> str:
     except Exception as e:
         return f"Błąd wyszukiwania w sieci: {str(e)}"
 
+def save_price_record(produkt: str, cena: str, zrodlo: str) -> str:
+    """Zapisuje wyciągniętą z sieci cenę i źródło bezpośrednio do tabeli monitoring_cen w bazie SQLite."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO monitoring_cen (produkt, cena, zrodlo) VALUES (?, ?, ?)",
+            (produkt, cena, zrodlo)
+        )
+        conn.commit()
+        return f"Sukces: Zapisano do bazy rekord -> {produkt} | Cena: {cena} | Źródło: {zrodlo}"
+    except Exception as e:
+        return f"Błąd zapisu do bazy: {str(e)}"
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     init_db()
     
@@ -61,18 +77,22 @@ if __name__ == "__main__":
         
     client = genai.Client(api_key=api_key)
 
-    # Polecenie wymagające użycia obu narzędzi (wyszukanie w sieci + weryfikacja w bazie SQL)
-    user_prompt = "Znajdź w sieci aktualne ceny adaptera Danfoss RTD na M30x1,5 i sprawdź, czy w naszej bazie w tabeli monitoring_cen są już jakieś wpisy na ten temat."
+    # Polecenie wymuszające wyszukanie i zapis do bazy
+    user_prompt = (
+        "Znajdź w sieci aktualne ceny adaptera Danfoss RTD na M30x1,5. "
+        "Wybierz najkorzystniejszą ofertę i użyj narzędzia save_price_record, "
+        "aby zapisać nazwę, cenę oraz URL do naszej bazy danych."
+    )
 
     response = client.models.generate_content(
         model='gemini-3.6-flash',
         contents=user_prompt,
         config=types.GenerateContentConfig(
-            tools=[query_local_database, search_web],
+            tools=[query_local_database, search_web, save_price_record],
             system_instruction=(
-                "Jesteś zaawansowanym, autonomicznym agentem analitycznym. "
-                "Masz dostęp do dwóch narzędzi: przeszukiwania lokalnej bazy danych SQL oraz wyszukiwarki internetowej na żywo. "
-                "Samodzielnie decydujesz, których narzędzi użyć i w jakiej kolejności, aby dostarczyć precyzyjny raport."
+                "Jesteś autonomicznym agentem badającym rynek. "
+                "Potrafisz wyszukiwać informacje w sieci, sprawdzić bazę SQL "
+                "oraz trwale zapisywać nowe ustalenia za pomocą narzędzia save_price_record."
             )
         )
     )
