@@ -3,11 +3,12 @@ import os
 import pandas as pd
 from google import genai
 from google.genai import types
+from openai import OpenAI
 
 DB_PATH = "baza_wiedzy.db"
 
 def init_db():
-    """Inicjalizuje bazę i tworzy tabele, jeśli plik nie istnieje."""
+    """Inicjalizuje bazę i tworzy tabele z nową kolumną weryfikacyjną."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
@@ -16,26 +17,63 @@ def init_db():
             produkt TEXT,
             cena TEXT,
             zrodlo TEXT,
-            weryfikacja TEXT,
+            status_weryfikacji TEXT,
             data_odczytu TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
     conn.close()
 
-def save_price_record(produkt: str, cena: str, zrodlo: str, weryfikacja: str = "Pozytywna") -> str:
-    """Zapisuje zweryfikowaną cenę i źródło bezpośrednio do tabeli monitoring_cen w bazie SQLite."""
+def audit_with_deepseek(produkt: str, cena: str, zrodlo: str) -> str:
+    """Wysyła pobrane dane do DeepSeek API w celu ścisłej weryfikacji technicznej."""
+    ds_key = os.environ.get("DEEPSEEK_API_KEY")
+    if not ds_key:
+        return "POMINIĘTO (Brak DEEPSEEK_API_KEY)"
+
+    try:
+        # DeepSeek używa tego samego interfejsu co OpenAI, zmieniamy tylko base_url
+        client_ds = OpenAI(api_key=ds_key, base_url="https://api.deepseek.com")
+        
+        prompt = (
+            f"Jesteś surowym inżynierem i audytorem ofert handlowych.\n"
+            f"Weryfikujesz, czy znaleziona oferta odpowiada szukanemu produktowi: 'Adapter Danfoss RTD na M30x1,5'.\n\n"
+            f"Znaleziona nazwa: {produkt}\n"
+            f"Znaleziona cena: {cena}\n"
+            f"URL: {zrodlo}\n\n"
+            f"Odpowiedz wyłącznie jednym słowem:\n"
+            f"- 'ZATWIERDZONE' – jeśli oferta na 100% dotyczy adaptera ze starego standardu Danfoss RTD na gwint M30x1,5.\n"
+            f"- 'ODRZUCONE' – jeśli oferta dotyczy innego gwintu (np. Danfoss RA, RAVL, M28) lub innego przedmiotu."
+        )
+
+        response = client_ds.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"BŁĄD DEEPSEEK: {str(e)}"
+
+def verify_and_save_record(produkt: str, cena: str, zrodlo: str) -> str:
+    """Narzędzie używane przez Gemini: przeprowadza audyt w DeepSeek i zapisuje wynik do bazy SQLite."""
+    # 1. Audyt krzyżowy w DeepSeek
+    status_weryfikacji = audit_with_deepseek(produkt, cena, zrodlo)
+    
+    # 2. Zapis do lokalnej bazy danych
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "INSERT INTO monitoring_cen (produkt, cena, zrodlo, weryfikacja) VALUES (?, ?, ?, ?)",
-            (produkt, cena, zrodlo, weryfikacja)
+            "INSERT INTO monitoring_cen (produkt, cena, zrodlo, status_weryfikacji) VALUES (?, ?, ?, ?)",
+            (produkt, cena, zrodlo, status_weryfikacji)
         )
         conn.commit()
-        return f"Sukces: Zapisano do bazy -> {produkt} | Cena: {cena} | Źródło: {zrodlo}"
+        return (
+            f"Wykonano weryfikację. Wynik DeepSeek: [{status_weryfikacji}]. "
+            f"Zapisano rekord w bazie: {produkt} | {cena} PLN | {zrodlo}"
+        )
     except Exception as e:
-        return f"Błąd zapisu do bazy: {str(e)}"
+        return f"Błąd zapisu do bazy SQL: {str(e)}"
     finally:
         conn.close()
 
@@ -44,33 +82,31 @@ if __name__ == "__main__":
     
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        print("Brak klucza GEMINI_API_KEY w zmiennych środowiskowych.")
+        print("Brak klucza GEMINI_API_KEY.")
         exit(1)
         
     client = genai.Client(api_key=api_key)
 
     user_prompt = (
-        "Przeszukaj sieć pod kątem aktualnych cen adaptera Danfoss RTD na M30x1,5. "
-        "Znajdź najbardziej precyzyjną ofertę, sprawdź czy opis na pewno dotyczy gwintu M30x1,5 i RTD, "
-        "a następnie użyj narzędzia save_price_record, aby zapisać produkt, cenę oraz adres URL do bazy."
+        "Przeszukaj sieć pod kątem najnowszych cen adaptera Danfoss RTD na M30x1,5. "
+        "Wyciągnij najkorzystniejszą ofertę (nazwę, cenę oraz URL) i przekaż ją "
+        "do narzędzia verify_and_save_record w celu weryfikacji przez DeepSeek i zapisu do bazy."
     )
 
-    # Korzystamy z natywnej funkcji Google Search Grounding
     response = client.models.generate_content(
         model='gemini-3.6-flash',
         contents=user_prompt,
         config=types.GenerateContentConfig(
             tools=[
-                {"google_search": {}},  # Natywne wyszukiwanie Google
-                save_price_record        # Zapis do bazy SQL
+                {"google_search": {}},      # Natywne wyszukiwanie Google przez Gemini
+                verify_and_save_record      # Pętla weryfikacji w DeepSeek + Zapis SQL
             ],
             system_instruction=(
-                "Jesteś precyzyjnym agentem badającym rynek. "
-                "Używasz Google Search do wyszukiwania aktualnych danych w internecie "
-                "oraz zapisujesz potwierdzone wynikiem wyszukiwania oferty bezpośrednio do bazy danych."
+                "Jesteś autonomicznym agentem badawczym. Pozyskujesz dane z Google Search "
+                "i przekazujesz je do zewnętrznego audytu przed zapisem do bazy."
             )
         )
     )
     
-    print("--- RAPORT AGENTA ---")
+    print("--- RAPORT KOŃCOWY AGENTA ---")
     print(response.text)
