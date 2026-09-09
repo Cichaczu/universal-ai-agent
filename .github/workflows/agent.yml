@@ -1,0 +1,28 @@
+name: Universal AI Agent
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # Automatyczne uruchomienie codziennie o 8:00 UTC
+  workflow_dispatch:      # Pozwala na ręczne uruchomienie w dowolnym momencie
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pobierz kod repozytorium
+        uses: actions/checkout@v4
+
+      - name: Skonfiguruj środowisko Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Zainstaluj wymagane biblioteki
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-genai pandas
+
+      - name: Uruchom skrypt agenta
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python agent.py
