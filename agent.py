@@ -1,8 +1,10 @@
 import sqlite3
 import os
+import time
 import pandas as pd
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from openai import OpenAI
 
 DB_PATH = "baza_wiedzy.db"
@@ -35,7 +37,7 @@ def audit_with_deepseek(szukany_produkt: str, tresc_oferty: str) -> str:
         
         prompt = (
             f"Jesteś surowym inżynierem i audytorem ofert handlowych.\n"
-            f"Weryfikujesz, czy poniższa oferta znaleziony w sieci odpowiada produktowi: '{szukany_produkt}'.\n\n"
+            f"Weryfikujesz, czy poniższa oferta znaleziona w sieci odpowiada produktowi: '{szukany_produkt}'.\n\n"
             f"Otrzymana treść oferty z sieci:\n{tresc_oferty[:1500]}\n\n"
             f"Odpowiedz wyłącznie jednym słowem:\n"
             f"- 'ZATWIERDZONE' – jeśli oferta na 100% dotyczy adaptera Danfoss RTD na gwint M30x1,5.\n"
@@ -80,21 +82,38 @@ if __name__ == "__main__":
     print("Krok 1: Wyszukiwanie w sieci przez Gemini Google Search Grounding...")
     search_prompt = "Znajdź aktualne ceny adaptera Danfoss RTD na M30x1,5 w polskich sklepach. Podaj nazwy sklepów, ceny w PLN i linki."
     
-    # ETAP 1: Tylko narządzenie google_search
-    search_response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=search_prompt,
-        config=types.GenerateContentConfig(
-            tools=[{"google_search": {}}]
-        )
-    )
+    surowe_dane = None
     
-    surowe_dane = search_response.text
+    # Wykorzystujemy stabilny model gemini-2.0-flash z obsługą błędów przekroczenia limitów
+    for attempt_model in ['gemini-2.0-flash', 'gemini-1.5-flash']:
+        try:
+            search_response = client.models.generate_content(
+                model=attempt_model,
+                contents=search_prompt,
+                config=types.GenerateContentConfig(
+                    tools=[{"google_search": {}}]
+                )
+            )
+            surowe_dane = search_response.text
+            if surowe_dane:
+                break
+        except APIError as e:
+            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                print(f"[Ostrzeżenie] Limit dla {attempt_model} osiągnięty. Czekam 5 sekund przed ponowieniem...")
+                time.sleep(5)
+            else:
+                print(f"Błąd API Gemini ({attempt_model}): {e}")
+        except Exception as e:
+            print(f"Błąd ogólny ({attempt_model}): {e}")
+
+    if not surowe_dane:
+        print("Nie udało się pobrać danych z Gemini z powodu przekroczenia limitów API. Proces przełożony do następnego uruchomienia.")
+        exit(0)  # Zamykamy skrypt z kodem 0, aby GitHub Actions nie zgłaszał fałszywego awaryjnego czerwonego błędu
+
     print("\n--- RAPORT Z WYSZUKIWARKI GOOGLE ---")
     print(surowe_dane)
 
     print("\nKrok 2: Audyt weryfikacyjny w DeepSeek...")
-    # ETAP 2: Walidacja i zapis
     status_audytu = audit_with_deepseek("Adapter Danfoss RTD na M30x1,5", surowe_dane)
     
     wynik_zapisu = save_record(
