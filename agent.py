@@ -1,10 +1,11 @@
 import os
+import time
 import sqlite3
 from datetime import datetime
 from google import genai
 import openai
 
-# 1. Inicjalizacja Klientów API z zmiennych środowiskowych / Streamlit Secrets
+# 1. Inicjalizacja Klientów API
 gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 deepseek_client = openai.OpenAI(
@@ -33,80 +34,109 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Uruchomienie inicjalizacji przy załadowaniu modułu
 init_db()
 
-# 3. Główna Logika Hiper-Agenta (3-etapowy potok przetwarzania)
+# 3. Główna Logika Hiper-Agenta z zabezpieczeniami i ponawianiem (Retry)
 def run_hyper_agent(query: str):
-    """
-    Krok 1: Gemini przeszukuje sieć na żywo (Google Search Grounding).
-    Krok 2: DeepSeek audytuje dane pod kątem precyzji i faktów.
-    Krok 3: OpenAI (GPT-4o) syntezuje wyniki i tworzy elegancki raport.
-    Krok 4: SQLite zapisuje całą ścieżkę do bazy danych.
-    """
-    
-    # ETAP 1: Gemini - Wyszukiwanie w internecie
-    gemini_response = gemini_client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=query,
-        config={'tools': [{'google_search': {}}]}
-    )
-    search_data = gemini_response.text
+    search_data = ""
+    audit_data = ""
+    final_report = ""
 
-    # ETAP 2: DeepSeek - Audyt techniczny i weryfikacja faktów
-    deepseek_response = deepseek_client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {
-                "role": "system", 
-                "content": (
-                    "Jesteś analitykiem i audytorem technicznym. Przeanalizuj uzyskane dane z sieci. "
-                    "Wyciągnij twarde fakty, zweryfikuj specyfikację, usuń szum marketingowy, "
-                    "sprawdź wyliczenia i wskaż ewentualne ryzyka lub rozbieżności cenowe."
-                )
-            },
-            {
-                "role": "user", 
-                "content": f"Pytanie użytkownika: {query}\n\nSurowe dane z wyszukiwarki:\n{search_data}"
-            }
-        ]
-    )
-    audit_data = deepseek_response.choices[0].message.content
+    # --- ETAP 1: Gemini (Wyszukiwanie z obsługą limitów) ---
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            gemini_response = gemini_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=query,
+                config={'tools': [{'google_search': {}}]}
+            )
+            search_data = gemini_response.text
+            break
+        except Exception as e:
+            if attempt == max_retries - 1:
+                search_data = f"[BŁĄD GEMINI - Przekroczone limity API lub brak odpowiedzi: {str(e)}]"
+            else:
+                time.sleep(3) # Odczekaj 3 sekundy przed ponowną próbą
 
-    # ETAP 3: OpenAI GPT-4o - Podsumowanie i raport końcowy
-    openai_response = openai_client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {
-                "role": "system", 
-                "content": (
-                    "Jesteś eksperckim doradcą strategicznym. Na podstawie przeprowadzonego audytu technicznego "
-                    "stwórz bardzo przejrzysty, elegancki i bezpośredni raport końcowy z rekomendacjami dla użytkownika."
-                )
-            },
-            {
-                "role": "user", 
-                "content": f"Pytanie pierwotne: {query}\n\nWyniki audytu technicznego:\n{audit_data}"
-            }
-        ]
-    )
-    final_report = openai_response.choices[0].message.content
+    # Krótka pauza między modelami, żeby nie uderzyć w limity jednocześnie
+    time.sleep(1)
 
-    # ETAP 4: Trwały zapis w bazie danych SQLite
-    conn = sqlite3.connect('agent_memory.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO market_research (timestamp, query, search_raw, audit_findings, final_report)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-        query, 
-        search_data, 
-        audit_data, 
-        final_report
-    ))
-    conn.commit()
-    conn.close()
+    # --- ETAP 2: DeepSeek (Audyt techniczny z obsługą limitów) ---
+    for attempt in range(max_retries):
+        try:
+            deepseek_response = deepseek_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": (
+                            "Jesteś analitykiem i audytorem technicznym. Przeanalizuj uzyskane dane z sieci. "
+                            "Wyciągnij twarde fakty, zweryfikuj specyfikację, usuń szum marketingowy, "
+                            "sprawdź wyliczenia i wskaż ewentualne ryzyka lub rozbieżności cenowe."
+                        )
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"Pytanie użytkownika: {query}\n\nSurowe dane z wyszukiwarki:\n{search_data}"
+                    }
+                ]
+            )
+            audit_data = deepseek_response.choices[0].message.content
+            break
+        except Exception as e:
+            if attempt == max_retries - 1:
+                audit_data = f"[BŁĄD DEEPSEEK - Błąd limitu / saldo: {str(e)}]"
+            else:
+                time.sleep(3)
+
+    time.sleep(1)
+
+    # --- ETAP 3: OpenAI GPT-4o (Raport końcowy) ---
+    for attempt in range(max_retries):
+        try:
+            openai_response = openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": (
+                            "Jesteś eksperckim doradcą strategicznym. Na podstawie przeprowadzonego audytu technicznego "
+                            "stwórz bardzo przejrzysty, elegancki i bezpośredni raport końcowy z rekomendacjami dla użytkownika."
+                        )
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"Pytanie pierwotne: {query}\n\nWyniki audytu technicznego:\n{audit_data}"
+                    }
+                ]
+            )
+            final_report = openai_response.choices[0].message.content
+            break
+        except Exception as e:
+            if attempt == max_retries - 1:
+                final_report = f"[BŁĄD OPENAI: {str(e)}]"
+            else:
+                time.sleep(3)
+
+    # --- ETAP 4: Zapis do SQLite ---
+    try:
+        conn = sqlite3.connect('agent_memory.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO market_research (timestamp, query, search_raw, audit_findings, final_report)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+            query, 
+            search_data, 
+            audit_data, 
+            final_report
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as db_err:
+        print(f"Błąd zapisu bazy danych: {db_err}")
 
     return {
         "final_report": final_report,
