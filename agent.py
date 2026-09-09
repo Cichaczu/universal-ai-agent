@@ -36,20 +36,19 @@ def init_db():
 
 init_db()
 
-# 3. Główna Logika Hiper-Agenta z maksymalną bazą modeli Gemini i fallbackiem
+# 3. Główna Logika Hiper-Agenta z pełną bazą modeli i obsługą limitów
 def run_hyper_agent(query: str):
     search_data = ""
     audit_data = ""
     final_report = ""
 
-    # --- ETAP 1: Gemini (Maksymalna baza modeli z automatycznym przełączaniem) ---
+    # --- ETAP 1: Gemini (Pełna baza modeli z obsługą wyszukiwania i fallbackiem) ---
     gemini_models = [
-        'gemini-2.0-flash', 
-        'gemini-1.5-pro', 
-        'gemini-1.5-flash',
-        'gemini-3.1',
-        'gemini-3.5',
-        'gemini-3.6'
+        'gemini-3.5-flash',
+        'gemini-3.1-pro',
+        'gemini-2.0-flash',
+        'gemini-1.5-pro',
+        'gemini-1.5-flash'
     ]
     
     for model_name in gemini_models:
@@ -61,15 +60,19 @@ def run_hyper_agent(query: str):
             )
             search_data = gemini_response.text
             if search_data:
-                break  # Sukces - uzyskano dane z aktywnego modelu
+                break  # Sukces - pobrano dane
         except Exception as e:
-            # Automatyczne przejście do kolejnego modelu w bazie przy napotkaniu limitu/błędu
+            # Jeśli model napotka błąd limitu lub brak dostępu, testujemy kolejny
             continue
 
+    # Jeśli cała baza modeli Gemini zawiodła przez limity, generujemy bezpieczny komunikat
     if not search_data:
-        search_data = "[BŁĄD GEMINI - Wszystkie modele z maksymalnej bazy osiągnęły limity API]"
+        search_data = (
+            "[OSTRZEŻENIE: Wygląda na to, że darmowy limit zapytań z Google Search dla Twojego klucza API "
+            "został w pełni wyczerpany. Agent przechodzi bezpośrednio do audytu na podstawie samej wiedzy bazowej modeli, "
+            "lub spróbuj dodać metodę płatności (billing) w konsoli Google AI Studio, aby zdjąć limity zapytań.]"
+        )
 
-    # Krótka pauza między etapami
     time.sleep(1)
 
     # --- ETAP 2: DeepSeek (Audyt techniczny z obsługą ponawiania) ---
@@ -82,14 +85,14 @@ def run_hyper_agent(query: str):
                     {
                         "role": "system", 
                         "content": (
-                            "Jesteś analitykiem i audytorem technicznym. Przeanalizuj uzyskane dane z sieci. "
+                            "Jesteś analitykiem i audytorem technicznym. Przeanalizuj uzyskane dane. "
                             "Wyciągnij twarde fakty, zweryfikuj specyfikację, usuń szum marketingowy, "
                             "sprawdź wyliczenia i wskaż ewentualne ryzyka lub rozbieżności cenowe."
                         )
                     },
                     {
                         "role": "user", 
-                        "content": f"Pytanie użytkownika: {query}\n\nSurowe dane z wyszukiwarki:\n{search_data}"
+                        "content": f"Pytanie użytkownika: {query}\n\nDane wejściowe:\n{search_data}"
                     }
                 ]
             )
@@ -112,7 +115,7 @@ def run_hyper_agent(query: str):
                     {
                         "role": "system", 
                         "content": (
-                            "Jesteś eksperckim doradcą strategicznym. Na podstawie przeprowadzonego audytu technicznego "
+                            "Jesteś eksperckim doradcą strategicznym. Na podstawie przeprowadzonego audytu "
                             "stwórz bardzo przejrzysty, elegancki i bezpośredni raport końcowy z rekomendacjami dla użytkownika."
                         )
                     },
